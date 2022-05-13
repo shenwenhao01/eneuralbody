@@ -52,3 +52,4 @@ def get_embedder(multires, input_dims=3):
 
 xyz_embedder, xyz_dim = get_embedder(cfg.xyz_res)
 view_embedder, view_dim = get_embedder(cfg.view_res)
+time_embedder, time_dim = get_embedder(cfg.time_res, input_dims=1)

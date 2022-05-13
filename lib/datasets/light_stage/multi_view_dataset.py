@@ -33,6 +33,7 @@ class Dataset(data.Dataset):
         i = i + cfg.begin_ith_frame
         i_intv = cfg.frame_interval
         ni = cfg.num_train_frame
+        self.num_frames = ni
         if cfg.test_novel_pose:
             i = (i + cfg.num_train_frame) * i_intv
             ni = cfg.num_novel_pose_frame
@@ -182,6 +183,9 @@ class Dataset(data.Dataset):
         rgb, ray_o, ray_d, near, far, coord_, mask_at_box = if_nerf_dutils.sample_ray_h36m(
             img, msk, K, R, T, can_bounds, self.nrays, self.split)
 
+        R = cv2.Rodrigues(Rh)[0].astype(np.float32)
+        latent_index = frame_index - cfg.begin_ith_frame
+
         ret = {
             'coord': coord,                 # (6890, 3) bbox内vertices的坐标(整数)
             'out_sh': out_sh,               # (3, 1) bbox dhw三个方向的voxel个数
@@ -190,11 +194,10 @@ class Dataset(data.Dataset):
             'ray_d': ray_d,                 # (1024, 3)
             'near': near,                   # (1024, )
             'far': far,                     # (1024, )
-            'mask_at_box': mask_at_box      # (1024, )用来控制采样点near<far
+            'mask_at_box': mask_at_box,      # (1024, )用来控制采样点near<far
+            'time_step': latent_index / self.num_frames         # time step
         }
 
-        R = cv2.Rodrigues(Rh)[0].astype(np.float32)
-        latent_index = frame_index - cfg.begin_ith_frame
         if cfg.test_novel_pose:
             latent_index = cfg.num_train_frame - 1
         meta = {

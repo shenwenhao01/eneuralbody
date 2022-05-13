@@ -29,6 +29,8 @@ class Dataset(data.Dataset):
         i = 0
         i = i + cfg.begin_ith_frame
         ni = cfg.num_train_frame
+        self.num_frames = ni
+        print("num of frames:", self.num_frames)
         if cfg.num_render_frame > 0:
             ni = cfg.num_render_frame
         i_intv = cfg.frame_interval
@@ -155,8 +157,11 @@ class Dataset(data.Dataset):
             'ray_d': ray_d,
             'near': near,
             'far': far,
-            'mask_at_box': mask_at_box
+            'mask_at_box': mask_at_box,
+            'time_step': latent_index / self.num_frames
         }
+        print(frame_index, latent_index)
+        print(ret['time_step'])
 
         R = cv2.Rodrigues(Rh)[0].astype(np.float32)
         latent_index = min(latent_index, cfg.num_train_frame - 1)

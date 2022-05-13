@@ -48,6 +48,8 @@ class Renderer:
 
         # used for color function
         sp_input['latent_index'] = batch['latent_index']
+        sp_input['time_step'] = batch['time_step']
+        assert sp_input['time_step'] <= 1.
 
         return sp_input
 

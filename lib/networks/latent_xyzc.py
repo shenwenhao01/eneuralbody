@@ -1,9 +1,10 @@
 from matplotlib.pyplot import grid
 import torch.nn as nn
-import spconv
+#import spconv
 import torch.nn.functional as F
 import torch
 from lib.config import cfg
+from .networks_stylegan2 import SynthesisNetwork, MappingNetwork
 from . import embedder
 
 
@@ -20,10 +21,26 @@ class Network(nn.Module):
         self.triplane_c = 32
         self.triplanes = nn.Parameter( torch.randn((self.triplane_c * 3, self.triplane_res, self.triplane_res)) )
 
-        # Decoder
+        self.use_bilinear = True
+        # dynamic deformation
+        self.use_dynamic = True
+        if self.use_dynamic:
+            self.w_dim = 512
+            self.z_dim = 0
+            self.c_dim = embedder.time_dim
+            mapping_kwargs = {}
+            self.deform_synthesis = SynthesisNetwork(w_dim = self.w_dim, 
+                                                    img_resolution = self.triplane_res, 
+                                                    img_channels = self.triplane_c * 3,
+                                                    num_fp16_res = 0,
+                                                    use_noise = True)
+            self.deform_mapping = MappingNetwork(z_dim=self.z_dim, c_dim=self.c_dim, w_dim=self.w_dim, 
+                                                num_ws=self.deform_synthesis.num_ws, **mapping_kwargs)        
+
+        # Neuralbody Decoder
         self.actvn = nn.ReLU()
 
-        self.fc_0 = nn.Conv1d(self.triplane_c*3, 256, 1)
+        self.fc_0 = nn.Conv1d(self.triplane_c * 3, 256, 1)
         self.fc_1 = nn.Conv1d(256, 256, 1)
         self.fc_2 = nn.Conv1d(256, 256, 1)
         self.alpha_fc = nn.Conv1d(256, 1, 1)
@@ -75,7 +92,7 @@ class Network(nn.Module):
         # convert the voxel coordinate to [0, 1]
         # convert dhw to whd, since the occupancy is indexed by dhw
         grid_coords = dhw[..., [2, 1, 0]]
-        return (grid_coords+1.)/2., viewdir
+        return grid_coords, viewdir
 
     def bilinear_sample_triplanes(self, points, feat_xy, feat_yz, feat_xz):
         '''
@@ -86,12 +103,12 @@ class Network(nn.Module):
         Returns:
         
         xyz_f: (batch, num_pixel * num_sample, channel)'''
-        batch, _, _ = points.shape
-        feat_xy = feat_xy.unsqueeze(0).repeat(batch, 1, 1, 1)
-        feat_yz = feat_yz.unsqueeze(0).repeat(batch, 1, 1, 1)
-        feat_xz = feat_xz.unsqueeze(0).repeat(batch, 1, 1, 1)
-        batch, channel, H, W = feat_xy.shape
-        points = points.reshape(batch, 1, -1, 3)
+        bs, _, _ = points.shape
+        feat_xy = feat_xy.unsqueeze(0).repeat(bs, 1, 1, 1)
+        feat_yz = feat_yz.unsqueeze(0).repeat(bs, 1, 1, 1)
+        feat_xz = feat_xz.unsqueeze(0).repeat(bs, 1, 1, 1)
+        bs, channel, H, W = feat_xy.shape
+        points = points.reshape(bs, 1, -1, 3)
         #points = points/1.5
         x = points[ ... , 0:1]
         y = points[ ... , 1:2] 
@@ -104,34 +121,12 @@ class Network(nn.Module):
         xz_f = F.grid_sample(feat_xz, grid=xz, mode='bilinear', align_corners=True)
         yz_f = F.grid_sample(feat_yz, grid=yz, mode='bilinear', align_corners=True)
 
-        xyz_f = (xy_f + xz_f + yz_f).reshape(batch, -1, channel)
-
-        return xyz_f
-
-    def nn_sample_triplanes(self, points, feat_xy, feat_yz, feat_xz):
-        batch, _, _ = points.shape
-        feat_xy = feat_xy.unsqueeze(0).repeat(batch, 1, 1, 1)
-        feat_yz = feat_yz.unsqueeze(0).repeat(batch, 1, 1, 1)
-        feat_xz = feat_xz.unsqueeze(0).repeat(batch, 1, 1, 1)
-        batch, channel, H, W = feat_xy.shape
-        points = points.reshape(batch, 1, -1, 3)
-        #points = points/1.5
-        x = points[ ... , 0:1]
-        y = points[ ... , 1:2] 
-        z = points[ ... , 2:3] 
-        xy = torch.cat([x, y], dim=-1)
-        xz = torch.cat([x, z], dim=-1)
-        yz = torch.cat([y, z], dim=-1)
-
-        xy_f = F.grid_sample(feat_xy, grid=xy, mode='nearest', align_corners=True)
-        xz_f = F.grid_sample(feat_xz, grid=xz, mode='nearest', align_corners=True)
-        yz_f = F.grid_sample(feat_yz, grid=yz, mode='nearest', align_corners=True)
-
-        xyz_f = (xy_f + xz_f + yz_f).reshape(batch, -1, channel)
+        xyz_f = torch.cat((xy_f, yz_f, xz_f), dim=1).reshape(bs, channel * 3, -1)
 
         return xyz_f
 
     def calculate_density(self, wpts, feature_volume, sp_input):
+        raise NotImplementedError
         # interpolate features
         ppts = self.pts_to_can_pts(wpts, sp_input)                      # smpl coord 采样点坐标
         grid_coords = self.get_grid_coords(ppts, sp_input)              # (batch, num_pixel * num_sample, 3) 大部分分布在[-1, 1]
@@ -154,19 +149,30 @@ class Network(nn.Module):
         # interpolate features
         ppts = self.pts_to_can_pts(wpts, sp_input)                      # smpl coord 采样点坐标
 
-        plane_xy, plane_yz, plane_xz = self.triplanes.chunk(3, dim=0)   # (32,128, 128)
+        triplanes = self.triplanes
+        if self.use_dynamic:
+            time_step = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
+            ws = self.deform_mapping(z=None, c = time_step)
+            deform_triplanes = self.deform_synthesis( ws[:, :self.deform_synthesis.num_ws] )[0]
+            triplanes = triplanes + deform_triplanes
+        plane_xy, plane_yz, plane_xz = triplanes.chunk(3, dim=0)   # (32,128, 128)
 
         # (batch, num_pixel * num_sample, 3) 分布在[0, 1]
         grid_coords, viewdir_inlier = self.get_grid_coords_(ppts, viewdir, sp_input)
-        grid_coords = grid_coords * (self.triplane_res - 1)
-        grid_coords = torch.round(grid_coords).clamp(min=0, max= self.triplane_res).to(torch.int64)          # Nearest neighbor
-        x, y, z = grid_coords[..., 0], grid_coords[..., 1], grid_coords[...,2]
-
-        feat_xy = plane_xy[:, x, y]
-        feat_xz = plane_xz[:, x, z]
-        feat_yz = plane_yz[:, y, z]
-
-        feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=0).permute(1, 0, 2)
+        if not self.use_bilinear:
+            #grid_coords = (grid_coords + 1.) / 2.
+            grid_coords = grid_coords * (self.triplane_res - 1)
+            grid_coords = torch.round(grid_coords).clamp(min=0, max= self.triplane_res).to(torch.int64)          # Nearest neighbor
+            x, y, z = grid_coords[..., 0], grid_coords[..., 1], grid_coords[...,2]
+            feat_xy = plane_xy[:, x, y]
+            feat_xz = plane_xz[:, x, z]
+            feat_yz = plane_yz[:, y, z]
+            feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=0).permute(1, 0, 2)          # (1, 3*self.triplane_c, n)
+            #feats = (feat_xy + feat_yz + feat_xz).permute(1, 0, 2)
+        else:
+            grid_coords = grid_coords * 2. - 1.
+            feats = self.bilinear_sample_triplanes(grid_coords, plane_xy, plane_yz, plane_xz)
+        
 
         # feats = self.bilinear_sample_triplanes(grid_coords, feat_xy, feat_yz, feat_xz)
         # feats = self.nn_sample_triplanes(grid_coords, feat_xy, feat_yz, feat_xz)
