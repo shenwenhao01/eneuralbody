@@ -126,21 +126,36 @@ class Network(nn.Module):
         return xyz_f
 
     def calculate_density(self, wpts, feature_volume, sp_input):
-        raise NotImplementedError
         # interpolate features
         ppts = self.pts_to_can_pts(wpts, sp_input)                      # smpl coord 采样点坐标
-        grid_coords = self.get_grid_coords(ppts, sp_input)              # (batch, num_pixel * num_sample, 3) 大部分分布在[-1, 1]
-        
-        feat_xy, feat_yz, feat_xz = self.triplanes.chunk(3, dim=0)
 
-        feats = self.bilinear_sample_triplanes(grid_coords, feat_xy, feat_yz, feat_xz)
-        
-        # decoder -> alpha & rgb
+        triplanes = self.triplanes
+        if self.use_dynamic:
+            time_step = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
+            ws = self.deform_mapping(z=None, c = time_step)
+            deform_triplanes = self.deform_synthesis( ws[:, :self.deform_synthesis.num_ws] )[0]
+            triplanes = triplanes + deform_triplanes
+        plane_xy, plane_yz, plane_xz = triplanes.chunk(3, dim=0)   # (32,128, 128)
+
+        viewdir = None
+        grid_coords, viewdir_inlier = self.get_grid_coords_(ppts, viewdir, sp_input)
+        if not self.use_bilinear:
+            grid_coords = grid_coords * (self.triplane_res - 1)
+            grid_coords = torch.round(grid_coords).clamp(min=0, max= self.triplane_res).to(torch.int64)
+            x, y, z = grid_coords[..., 0], grid_coords[..., 1], grid_coords[...,2]
+            feat_xy = plane_xy[:, x, y]
+            feat_xz = plane_xz[:, x, z]
+            feat_yz = plane_yz[:, y, z]
+            feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=0).permute(1, 0, 2)
+        else:
+            grid_coords = grid_coords * 2. - 1.
+            feats = self.bilinear_sample_triplanes(grid_coords, plane_xy, plane_yz, plane_xz)
+
         net = self.actvn(self.fc_0(feats))
         net = self.actvn(self.fc_1(net))
         net = self.actvn(self.fc_2(net))
 
-        alpha = net[..., 0:1].permute(0, 2, 1)          # (batch, 1, num_pixel * num_sample)
+        alpha = self.alpha_fc(net)
         alpha = alpha.transpose(1, 2)
 
         return alpha
