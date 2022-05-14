@@ -105,9 +105,9 @@ class Trainer(object):
             loss_state.append('{}: {:.4f}'.format(k, val_loss_stats[k]))
         print(loss_state)
 
-        if evaluator is not None:
-            result = evaluator.summarize()
-            val_loss_stats.update(result)
+        #if evaluator is not None:
+        #    result = evaluator.summarize()
+        #    val_loss_stats.update(result)
 
         if recorder:
             recorder.record('val', epoch, val_loss_stats, image_stats)

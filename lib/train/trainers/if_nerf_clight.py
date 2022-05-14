@@ -20,9 +20,14 @@ class NetworkWrapper(nn.Module):
 
         scalar_stats = {}
         loss = 0
-
+        
         mask = batch['mask_at_box']
-        img_loss = self.img2mse(ret['rgb_map'][mask], batch['rgb'][mask])
+        try:
+            img_loss = self.img2mse(ret['rgb_map'][mask], batch['rgb'][mask])
+        except:
+            mask = torch.full((1, mask.sum()), True)
+            img_loss = self.img2mse(ret['rgb_map'][mask], batch['rgb'][mask])
+            print(mask.shape, ret['rgb_map'].shape, batch['rgb'].shape)
         scalar_stats.update({'img_loss': img_loss})
         loss += img_loss
 

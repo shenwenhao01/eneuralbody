@@ -112,7 +112,8 @@ class Renderer:
 
         # volume rendering for each pixel
         n_batch, n_pixel = ray_o.shape[:2]
-        chunk = 2048
+        #chunk = 2048
+        chunk  = 4096
         ret_list = []
         for i in range(0, n_pixel, chunk):
             ray_o_chunk = ray_o[:, i:i + chunk]

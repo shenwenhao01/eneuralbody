@@ -58,8 +58,8 @@ def train(cfg, network):
                        epoch,
                        last=True)
 
-        #if (epoch + 1) % cfg.eval_ep == 0:
-        #    trainer.val(epoch, val_loader, evaluator, recorder)
+        if (epoch + 1) % cfg.eval_ep == 0:
+            trainer.val(epoch, val_loader, evaluator, recorder)
 
     return network
 

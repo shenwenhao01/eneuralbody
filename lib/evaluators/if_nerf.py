@@ -1,6 +1,6 @@
 import numpy as np
 from lib.config import cfg
-from skimage import measure
+from skimage.measure import compare_ssim
 import os
 import cv2
 from termcolor import colored
@@ -41,7 +41,7 @@ class Evaluator:
             (img_gt[..., [2, 1, 0]] * 255))
 
         # compute the ssim
-        ssim = measure.compare_ssim(img_pred, img_gt, multichannel=True)
+        ssim = compare_ssim(img_pred, img_gt, multichannel=True)
         return ssim
 
     def evaluate(self, output, batch):
