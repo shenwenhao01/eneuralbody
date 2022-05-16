@@ -29,6 +29,7 @@ class Dataset(data.Dataset):
         i = 0
         i = i + cfg.begin_ith_frame
         ni = cfg.num_train_frame
+        self.num_frames = ni
         i_intv = cfg.frame_interval
         self.ims = np.array([
             np.array(ims_data['ims'])[cfg.training_view]
@@ -151,6 +152,9 @@ class Dataset(data.Dataset):
         ray_o, ray_d, near, far, center, scale, mask_at_box = render_utils.image_rays(
             self.render_w2c[index], K, can_bounds)
 
+        R = cv2.Rodrigues(Rh)[0].astype(np.float32)
+        latent_index = min(latent_index, cfg.num_train_frame - 1)
+        
         ret = {
             'coord': coord,
             'out_sh': out_sh,
@@ -158,11 +162,10 @@ class Dataset(data.Dataset):
             'ray_d': ray_d,
             'near': near,
             'far': far,
-            'mask_at_box': mask_at_box
+            'mask_at_box': mask_at_box,
+            'time_step': latent_index / self.num_frames
         }
 
-        R = cv2.Rodrigues(Rh)[0].astype(np.float32)
-        latent_index = min(latent_index, cfg.num_train_frame - 1)
         meta = {
             'bounds': bounds,
             'R': R,

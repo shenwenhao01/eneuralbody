@@ -32,7 +32,8 @@ class Renderer(if_clight_renderer.Renderer):
 
         # encode neural body
         sp_input = self.prepare_sp_input(batch)
-        feature_volume = self.net.encode_sparse_voxels(sp_input)
+        #feature_volume = self.net.encode_sparse_voxels(sp_input)
+        feature_volume = None
         alpha_decoder = lambda x: self.net.calculate_density(
             x, feature_volume, sp_input)
 

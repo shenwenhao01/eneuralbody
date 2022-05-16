@@ -1,3 +1,4 @@
+from re import M
 import torch.utils.data as data
 from lib.utils import base_utils
 from PIL import Image
@@ -165,10 +166,12 @@ class Dataset(data.Dataset):
         H, W = int(img.shape[0] * cfg.ratio), int(img.shape[1] * cfg.ratio)
         img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
         msk = cv2.resize(msk, (W, H), interpolation=cv2.INTER_NEAREST)
-        if cfg.mask_bkgd:
+        if cfg.mask_bkgd:       # mask 人体之外的地方
             img[msk == 0] = 0
             if cfg.white_bkgd:
                 img[msk == 0] = 1
+            if cfg.rand_bkgd:
+                img[msk == 0] = -1
         K[:2] = K[:2] * cfg.ratio
 
         if self.human in ['CoreView_313', 'CoreView_315']:
@@ -189,7 +192,7 @@ class Dataset(data.Dataset):
         ret = {
             'coord': coord,                 # (6890, 3) bbox内vertices的坐标(整数)
             'out_sh': out_sh,               # (3, 1) bbox dhw三个方向的voxel个数
-            'rgb': rgb,                     # (1024, 3) GT rgb值
+            'rgb': rgb,                     # (1024, 3) GT rgb值(bbox内采样)
             'ray_o': ray_o,                 # (1024, 3)
             'ray_d': ray_d,                 # (1024, 3)
             'near': near,                   # (1024, )

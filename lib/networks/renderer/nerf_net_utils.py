@@ -3,7 +3,7 @@ import torch
 from lib.config import cfg
 
 
-def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False):
+def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, bkgd=None):
     """Transforms model's predictions to semantically meaningful values.
     Args:
         raw: [num_rays, num_samples along ray, 4]. Prediction from model.
@@ -45,8 +45,11 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False):
                               depth_map / torch.sum(weights, -1))
     acc_map = torch.sum(weights, -1)
 
-    if white_bkgd:
-        rgb_map = rgb_map + (1. - acc_map[..., None])
+    #if white_bkgd:
+    #    rgb_map = rgb_map + (1. - acc_map[..., None])
+    
+    if bkgd is not None:
+        rgb_map = rgb_map + bkgd * (1. - acc_map[..., None])
 
     return rgb_map, disp_map, acc_map, weights, depth_map
 

@@ -48,8 +48,13 @@ class Renderer:
 
         # used for color function
         sp_input['latent_index'] = batch['latent_index']
-        sp_input['time_step'] = batch['time_step']
-        assert sp_input['time_step'] <= 1.
+        try:
+            sp_input['time_step'] = batch['time_step']
+            assert sp_input['time_step'] <= 1.
+        except AssertionError:
+            print("Rendering novel poses !")
+        except KeyError:
+            pass
 
         return sp_input
 
@@ -62,7 +67,7 @@ class Renderer:
         return raw
 
     def get_pixel_value(self, ray_o, ray_d, near, far, feature_volume,
-                        sp_input, batch):
+                        sp_input, batch, rand_bkgd=None):
         '''
         Inputs:
         
@@ -86,7 +91,7 @@ class Renderer:
         z_vals = z_vals.view(-1, n_sample)
         ray_d = ray_d.view(-1, 3)
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(
-            raw, z_vals, ray_d, cfg.raw_noise_std, cfg.white_bkgd)
+            raw, z_vals, ray_d, cfg.raw_noise_std, cfg.white_bkgd, rand_bkgd)
 
         ret = {
             'rgb_map': rgb_map.view(n_batch, n_pixel, -1),
@@ -98,7 +103,7 @@ class Renderer:
 
         return ret
 
-    def render(self, batch):
+    def render(self, batch, rand_bkgd=None):
         ray_o = batch['ray_o']
         ray_d = batch['ray_d']
         near = batch['near']
@@ -112,8 +117,8 @@ class Renderer:
 
         # volume rendering for each pixel
         n_batch, n_pixel = ray_o.shape[:2]
-        #chunk = 2048
-        chunk  = 4096
+        chunk = 2048
+        #chunk  = 4096
         ret_list = []
         for i in range(0, n_pixel, chunk):
             ray_o_chunk = ray_o[:, i:i + chunk]
@@ -122,7 +127,8 @@ class Renderer:
             far_chunk = far[:, i:i + chunk]
             pixel_value = self.get_pixel_value(ray_o_chunk, ray_d_chunk,
                                                near_chunk, far_chunk,
-                                               feature_volume, sp_input, batch)
+                                               feature_volume, sp_input, batch, 
+                                               rand_bkgd)
             ret_list.append(pixel_value)
 
         keys = ret_list[0].keys()

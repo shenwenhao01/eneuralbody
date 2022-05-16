@@ -159,15 +159,17 @@ class Dataset(data.Dataset):
 
         inside = self.prepare_inside_pts(pts, i)
 
+        R = cv2.Rodrigues(Rh)[0].astype(np.float32)
+        latent_index = min(latent_index, cfg.num_train_frame - 1)
+
         ret = {
             'coord': coord,
             'out_sh': out_sh,
             'pts': pts,
-            'inside': inside
+            'inside': inside,
+            'time_step': latent_index / self.ni
         }
 
-        R = cv2.Rodrigues(Rh)[0].astype(np.float32)
-        latent_index = min(latent_index, cfg.num_train_frame - 1)
         meta = {
             'wbounds': can_bounds,
             'bounds': bounds,

@@ -155,12 +155,12 @@ def sample_ray_h36m(img, msk, K, R, T, bounds, nrays, split):
     ray_o, ray_d = get_rays(H, W, K, R, T)
 
     pose = np.concatenate([R, T], axis=1)
-    bound_mask = get_bound_2d_mask(bounds, K, pose, H, W)
+    bound_mask = get_bound_2d_mask(bounds, K, pose, H, W)       # bbox bounds in img
 
-    msk = msk * bound_mask
+    msk = msk * bound_mask                                      # msk: body mask(>2 pix)
     bound_mask[msk == 100] = 0
 
-    if split == 'train':
+    if split == 'train':                                        # 在 bbox 内采样
         nsampled_rays = 0
         face_sample_ratio = cfg.face_sample_ratio
         body_sample_ratio = cfg.body_sample_ratio

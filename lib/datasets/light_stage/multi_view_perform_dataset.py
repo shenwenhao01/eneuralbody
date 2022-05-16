@@ -160,8 +160,8 @@ class Dataset(data.Dataset):
             'mask_at_box': mask_at_box,
             'time_step': latent_index / self.num_frames
         }
-        print(frame_index, latent_index)
-        print(ret['time_step'])
+        #print(frame_index, latent_index)
+        #print(ret['time_step'])
 
         R = cv2.Rodrigues(Rh)[0].astype(np.float32)
         latent_index = min(latent_index, cfg.num_train_frame - 1)
