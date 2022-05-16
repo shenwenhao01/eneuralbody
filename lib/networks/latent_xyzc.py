@@ -24,10 +24,16 @@ class Network(nn.Module):
         self.use_bilinear = True
         # dynamic deformation
         self.use_dynamic = True
+        self.use_timestep = False
         if self.use_dynamic:
             self.w_dim = 512
             self.z_dim = 0
-            self.c_dim = embedder.time_dim
+            if self.use_timestep:
+                self.c_dim = embedder.time_dim
+            else:
+                self.total_frames = 300
+                self.c_dim = 128
+                self.latent_embedding = nn.Embedding(self.total_frames, self.c_dim)
             mapping_kwargs = {}
             self.deform_synthesis = SynthesisNetwork(w_dim = self.w_dim, 
                                                     img_resolution = self.triplane_res, 
@@ -171,8 +177,11 @@ class Network(nn.Module):
 
         triplanes = self.triplanes
         if self.use_dynamic:
-            time_step = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
-            ws = self.deform_mapping(z=None, c = time_step)
+            if self.use_timestep:
+                latent_embedding = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
+            else:
+                latent_embedding = self.latent_embedding(sp_input['latent_index'])
+            ws = self.deform_mapping(z=None, c = latent_embedding)
             deform_triplanes = self.deform_synthesis( ws[:, :self.deform_synthesis.num_ws] )[0]
             triplanes = triplanes + deform_triplanes
         plane_xy, plane_yz, plane_xz = triplanes.chunk(3, dim=0)   # (32,128, 128)
@@ -206,8 +215,11 @@ class Network(nn.Module):
 
         triplanes = self.triplanes
         if self.use_dynamic:
-            time_step = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
-            ws = self.deform_mapping(z=None, c = time_step)
+            if self.use_timestep:
+                latent_embedding = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
+            else:
+                latent_embedding = self.latent_embedding(sp_input['latent_index'])
+            ws = self.deform_mapping(z=None, c = latent_embedding)
             deform_triplanes = self.deform_synthesis( ws[:, :self.deform_synthesis.num_ws] )[0]
             triplanes = triplanes + deform_triplanes
         plane_xy, plane_yz, plane_xz = triplanes.chunk(3, dim=0)   # (32,128, 128)

@@ -48,6 +48,7 @@ class Renderer:
 
         # used for color function
         sp_input['latent_index'] = batch['latent_index']
+        assert sp_input['latent_index']<300, "index latent embedding"
         try:
             sp_input['time_step'] = batch['time_step']
             assert sp_input['time_step'] <= 1.
