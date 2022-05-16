@@ -19,8 +19,6 @@ class NetworkWrapper(nn.Module):
         ret = self.renderer.render(batch, rand_bkgd=rand_bkgd)       # if_clight_renderer
 
         idx = batch['rgb'][:, :, 0] < 0
-        #print(idx.shape)
-        #print(batch['rgb'].shape)
         if rand_bkgd is not None:
             batch['rgb'][idx] = rand_bkgd
         else:

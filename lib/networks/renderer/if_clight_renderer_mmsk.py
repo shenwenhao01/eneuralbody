@@ -61,7 +61,7 @@ class Renderer(if_clight_renderer.Renderer):
         return full_raw
 
     def get_pixel_value(self, ray_o, ray_d, near, far, feature_volume,
-                        sp_input, batch):
+                        sp_input, batch, rand_bkgd=None):
         # sampling points along camera rays
         wpts, z_vals = self.get_sampling_points(ray_o, ray_d, near, far)
         inside = self.prepare_inside_pts(wpts, batch)
@@ -81,7 +81,7 @@ class Renderer(if_clight_renderer.Renderer):
         z_vals = z_vals.view(-1, n_sample)
         ray_d = ray_d.view(-1, 3)
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(
-            raw, z_vals, ray_d, cfg.raw_noise_std, cfg.white_bkgd)
+            raw, z_vals, ray_d, cfg.raw_noise_std, cfg.white_bkgd, rand_bkgd)
 
         ret = {
             'rgb_map': rgb_map.view(n_batch, n_pixel, -1),

@@ -128,7 +128,7 @@ class Renderer:
             pixel_value = self.get_pixel_value(ray_o_chunk, ray_d_chunk,
                                                near_chunk, far_chunk,
                                                feature_volume, sp_input, batch, 
-                                               rand_bkgd)
+                                               rand_bkgd=rand_bkgd)
             ret_list.append(pixel_value)
 
         keys = ret_list[0].keys()

@@ -91,7 +91,7 @@ class Trainer(object):
         for batch in tqdm.tqdm(data_loader):
             batch = self.to_cuda(batch)
             with torch.no_grad():
-                if self.white_bkgd:
+                if cfg.white_bkgd:
                     rand_bkgd = torch.ones((1,3), device=self.device)
                 output, loss, loss_stats, image_stats = self.network(batch, rand_bkgd)
                 if evaluator is not None:
