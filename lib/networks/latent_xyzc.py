@@ -102,17 +102,17 @@ class Network(nn.Module):
         
         Returns:
         
-        xyz_f: (batch, num_pixel * num_sample, channel)'''
+        xyz_f: (batch, num_pixel * num_sample, 3 * channel)'''
+        points = points * 2. - 1.
         bs, _, _ = points.shape
         feat_xy = feat_xy.unsqueeze(0).repeat(bs, 1, 1, 1)
         feat_yz = feat_yz.unsqueeze(0).repeat(bs, 1, 1, 1)
         feat_xz = feat_xz.unsqueeze(0).repeat(bs, 1, 1, 1)
         bs, channel, H, W = feat_xy.shape
         points = points.reshape(bs, 1, -1, 3)
-        #points = points/1.5
         x = points[ ... , 0:1]
-        y = points[ ... , 1:2] 
-        z = points[ ... , 2:3] 
+        y = points[ ... , 1:2]
+        z = points[ ... , 2:3]
         xy = torch.cat([x, y], dim=-1)
         xz = torch.cat([x, z], dim=-1)
         yz = torch.cat([y, z], dim=-1)
@@ -124,6 +124,46 @@ class Network(nn.Module):
         xyz_f = torch.cat((xy_f, yz_f, xz_f), dim=1).reshape(bs, channel * 3, -1)
 
         return xyz_f
+
+    def my_2d_bilinear_sample(self, ix, iy, feat):
+        '''
+        Inputs:
+        
+        points: (batch, num_pixel * num_sample, 2) bbox坐标系内的点 [0, 1]
+        feat_xy: (channel, H, W)
+        
+        Returns:
+        
+        xy_f: (batch, num_pixel * num_sample, channel)
+        '''
+        #feat = feat.unsqueeze(0).repeat(bs, 1, 1, 1)        # (channel, H, W)
+        ix = ix * (self.triplane_res - 1)            # (batch, num_pixel * num_sample, 1)
+        iy = iy * (self.triplane_res - 1)
+
+        with torch.no_grad():
+            ix_floor = torch.floor(ix).long()
+            iy_floor = torch.floor(iy).long()
+            ix_ceil = ix_floor + 1
+            iy_ceil = iy_floor + 1
+        
+        w_00 = (ix_ceil - ix) * (iy_ceil - iy).unsqueeze(0)      # (1, bs, n, 1)
+        w_11 = (ix - ix_floor) * (iy - iy_floor).unsqueeze(0)
+        w_10 = (ix - ix_floor) * (iy_ceil - iy).unsqueeze(0)
+        w_01 = (ix_ceil - ix) * (iy - iy_floor).unsqueeze(0)
+
+        with torch.no_grad():
+            torch.clamp(ix_floor, 0, self.triplane_res-1, out=ix_floor)
+            torch.clamp(iy_floor, 0, self.triplane_res-1, out=iy_floor)
+            torch.clamp(ix_ceil, 0, self.triplane_res-1, out=ix_ceil)
+            torch.clamp(iy_ceil, 0, self.triplane_res-1, out=iy_ceil)
+        
+        v_00 = feat[:, ix_floor, iy_floor]          # (channel, bs, n, 1)
+        v_11 = feat[:, ix_ceil, iy_ceil]
+        v_01 = feat[:, ix_floor, iy_ceil]
+        v_10 = feat[:, ix_ceil, iy_floor]
+
+        ret = (v_00 * w_00 + v_01 * w_01 + v_10 * w_10 + v_11 * w_11 ).permute(1, 0, 2, 3)      # (self.triplane_c, bs, n, 1)
+        return ret.squeeze(-1)         # (bs, self.triplane_c, n)
 
     def calculate_density(self, wpts, feature_volume, sp_input):
         # interpolate features
@@ -174,24 +214,23 @@ class Network(nn.Module):
 
         # (batch, num_pixel * num_sample, 3) 分布在[0, 1]
         grid_coords, viewdir_inlier = self.get_grid_coords_(ppts, viewdir, sp_input)
-        if not self.use_bilinear:
-            #grid_coords = (grid_coords + 1.) / 2.
+        if not self.use_bilinear:          # Nearest neighbor
             grid_coords = grid_coords * (self.triplane_res - 1)
-            grid_coords = torch.round(grid_coords).clamp(min=0, max= self.triplane_res).to(torch.int64)          # Nearest neighbor
+            grid_coords = torch.round(grid_coords).clamp(min=0, max= self.triplane_res).to(torch.int64)
             x, y, z = grid_coords[..., 0], grid_coords[..., 1], grid_coords[...,2]
             feat_xy = plane_xy[:, x, y]
             feat_xz = plane_xz[:, x, z]
             feat_yz = plane_yz[:, y, z]
-            feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=0).permute(1, 0, 2)          # (1, 3*self.triplane_c, n)
+            feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=0).permute(1, 0, 2)          # (bs, 3*self.triplane_c, n)
             #feats = (feat_xy + feat_yz + feat_xz).permute(1, 0, 2)
         else:
-            grid_coords = grid_coords * 2. - 1.
-            feats = self.bilinear_sample_triplanes(grid_coords, plane_xy, plane_yz, plane_xz)
+            #feats = self.bilinear_sample_triplanes(grid_coords, plane_xy, plane_yz, plane_xz)
+            x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
+            feat_xy = self.my_2d_bilinear_sample(x, y, plane_xy)
+            feat_yz = self.my_2d_bilinear_sample(y, z, plane_yz)
+            feat_xz = self.my_2d_bilinear_sample(x, z, plane_xz)
+            feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)
         
-
-        # feats = self.bilinear_sample_triplanes(grid_coords, feat_xy, feat_yz, feat_xz)
-        # feats = self.nn_sample_triplanes(grid_coords, feat_xy, feat_yz, feat_xz)
-
         # decoder -> alpha & rgb
         # calculate density
         net = self.actvn(self.fc_0(feats))
