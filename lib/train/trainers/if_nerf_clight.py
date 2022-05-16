@@ -18,7 +18,9 @@ class NetworkWrapper(nn.Module):
     def forward(self, batch, rand_bkgd=None):
         ret = self.renderer.render(batch, rand_bkgd=rand_bkgd)       # if_clight_renderer
 
-        idx = torch.nonzero(batch['rgb'][:, :, 0] < 0)
+        idx = batch['rgb'][:, :, 0] < 0
+        #print(idx.shape)
+        #print(batch['rgb'].shape)
         if rand_bkgd is not None:
             batch['rgb'][idx] = rand_bkgd
         else:
@@ -31,10 +33,9 @@ class NetworkWrapper(nn.Module):
         try:
             img_loss = self.img2mse(ret['rgb_map'][mask], batch['rgb'][mask])
         except:
-            #mask = torch.full( (1, int(mask.sum()) ), True, dtype=bool)
-            mask = torch.ones( (1, int(mask.sum()) )).astype(bool)
+            mask = torch.full( (1, int(mask.sum()) ), True, dtype=bool)
+            #mask = torch.ones( (1, int(mask.sum()) )).astype(bool)
             img_loss = self.img2mse(ret['rgb_map'][mask], batch['rgb'][mask])
-            #print(mask.shape, ret['rgb_map'].shape, batch['rgb'].shape)
         scalar_stats.update({'img_loss': img_loss})
         loss += img_loss
 
