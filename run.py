@@ -96,7 +96,11 @@ def run_visualize():
             if k != 'meta':
                 batch[k] = batch[k].cuda()
         with torch.no_grad():
-            output = renderer.render(batch)
+            if cfg.white_bkgd:
+                bkgd = torch.ones((1,3)).cuda()
+            else:
+                bkgd = torch.zeros((1,3)).cuda()
+            output = renderer.render(batch, rand_bkgd=bkgd)
             visualizer.visualize(output, batch)
 
 
