@@ -18,12 +18,22 @@ class Network(nn.Module):
         self.latent = nn.Embedding(cfg.num_train_frame, 128)
         
         self.triplane_res = 128
-        self.triplane_c = 32
-        self.triplanes = nn.Parameter( torch.randn((self.triplane_c * 3, self.triplane_res, self.triplane_res)) )
+        self.triplane_c = 48
+        self.multi_res = True
+        if not self.multi_res:
+            self.triplanes = nn.Parameter( torch.randn((self.triplane_c * 3, self.triplane_res, self.triplane_res)) )
+        else:
+            triplane_c = int(self.triplane_c / 4)
+            self.res_list = [16, 64, 128, 512]
+            self.triplane_0 = nn.Parameter( torch.randn((triplane_c * 3, self.res_list[0] ,self.res_list[0] )) )
+            self.triplane_1 = nn.Parameter( torch.randn((triplane_c * 3, self.res_list[1] ,self.res_list[1] )) )
+            self.triplane_2 = nn.Parameter( torch.randn((triplane_c * 3, self.res_list[2] ,self.res_list[2])) )
+            self.triplane_3 = nn.Parameter( torch.randn((triplane_c * 3, self.res_list[3], self.res_list[3])) )
+            self.triplanes_list = [self.triplane_0, self.triplane_1, self.triplane_2, self.triplane_3]
 
         self.use_bilinear = True
         # dynamic deformation
-        self.use_dynamic = True
+        self.use_dynamic = False
         self.use_timestep = False
         if self.use_dynamic:
             self.w_dim = 512
@@ -85,7 +95,7 @@ class Network(nn.Module):
         '''
         Returns:
         
-        grid_coords: (batch, num_pixel * num_sample, 3)   whd(xyz): 分布在[-1,1]之间'''
+        grid_coords: (batch, num_pixel * num_sample, 3)   whd(xyz): 分布在[0,1]之间'''
         # convert xyz to the voxel coordinate dhw
         min_dhw = sp_input['bounds'][:, 0, [2, 1, 0]] - 0.5
         max_dhw = sp_input['bounds'][:, 1, [2, 1, 0]] + 0.5
@@ -131,7 +141,7 @@ class Network(nn.Module):
 
         return xyz_f
 
-    def my_2d_bilinear_sample(self, ix, iy, feat):
+    def my_2d_bilinear_sample(self, res, ix, iy, feat):
         '''
         Inputs:
         
@@ -143,8 +153,8 @@ class Network(nn.Module):
         xy_f: (batch, num_pixel * num_sample, channel)
         '''
         #feat = feat.unsqueeze(0).repeat(bs, 1, 1, 1)        # (channel, H, W)
-        ix = ix * (self.triplane_res - 1)            # (batch, num_pixel * num_sample, 1)
-        iy = iy * (self.triplane_res - 1)
+        ix = ix * (res - 1)            # (batch, num_pixel * num_sample, 1)
+        iy = iy * (res - 1)
 
         with torch.no_grad():
             ix_floor = torch.floor(ix).long()
@@ -158,10 +168,10 @@ class Network(nn.Module):
         w_01 = (ix_ceil - ix) * (iy - iy_floor).unsqueeze(0)
 
         with torch.no_grad():
-            torch.clamp(ix_floor, 0, self.triplane_res-1, out=ix_floor)
-            torch.clamp(iy_floor, 0, self.triplane_res-1, out=iy_floor)
-            torch.clamp(ix_ceil, 0, self.triplane_res-1, out=ix_ceil)
-            torch.clamp(iy_ceil, 0, self.triplane_res-1, out=iy_ceil)
+            torch.clamp(ix_floor, 0, res-1, out=ix_floor)
+            torch.clamp(iy_floor, 0, res-1, out=iy_floor)
+            torch.clamp(ix_ceil, 0, res-1, out=ix_ceil)
+            torch.clamp(iy_ceil, 0, res-1, out=iy_ceil)
         
         v_00 = feat[:, ix_floor, iy_floor]          # (channel, bs, n, 1)
         v_11 = feat[:, ix_ceil, iy_ceil]
@@ -211,38 +221,51 @@ class Network(nn.Module):
 
     def calculate_density_color(self, wpts, viewdir, feature_volume, sp_input):
         # interpolate features
-        ppts = self.pts_to_can_pts(wpts, sp_input)                      # smpl coord 采样点坐标
+        ppts = self.pts_to_can_pts(wpts, sp_input)                                          # smpl coord 采样点坐标
+        grid_coords, viewdir_inlier = self.get_grid_coords_(ppts, viewdir, sp_input)        # (batch, num_pixel * num_sample, 3) 分布在[0, 1]
 
-        triplanes = self.triplanes
-        if self.use_dynamic:
-            if self.use_timestep:
-                latent_embedding = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
+        if not self.multi_res:
+            triplanes = self.triplanes
+            if self.use_dynamic:
+                if self.use_timestep:
+                    latent_embedding = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
+                else:
+                    latent_embedding = self.latent_embedding(sp_input['latent_index'])
+                ws = self.deform_mapping(z=None, c = latent_embedding)
+                deform_triplanes = self.deform_synthesis( ws[:, :self.deform_synthesis.num_ws] )[0]
+                triplanes = triplanes + deform_triplanes
+            plane_xy, plane_yz, plane_xz = triplanes.chunk(3, dim=0)   # (32,128, 128)
+            
+            if not self.use_bilinear:          # Nearest neighbor
+                grid_coords = grid_coords * (self.triplane_res - 1)
+                grid_coords = torch.round(grid_coords).clamp(min=0, max= self.triplane_res).to(torch.int64)
+                x, y, z = grid_coords[..., 0], grid_coords[..., 1], grid_coords[...,2]
+                feat_xy = plane_xy[:, x, y]
+                feat_xz = plane_xz[:, x, z]
+                feat_yz = plane_yz[:, y, z]
+                feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=0).permute(1, 0, 2)          # (bs, 3*self.triplane_c, n)
+                #feats = (feat_xy + feat_yz + feat_xz).permute(1, 0, 2)
             else:
-                latent_embedding = self.latent_embedding(sp_input['latent_index'])
-            ws = self.deform_mapping(z=None, c = latent_embedding)
-            deform_triplanes = self.deform_synthesis( ws[:, :self.deform_synthesis.num_ws] )[0]
-            triplanes = triplanes + deform_triplanes
-        plane_xy, plane_yz, plane_xz = triplanes.chunk(3, dim=0)   # (32,128, 128)
-
-        # (batch, num_pixel * num_sample, 3) 分布在[0, 1]
-        grid_coords, viewdir_inlier = self.get_grid_coords_(ppts, viewdir, sp_input)
-        if not self.use_bilinear:          # Nearest neighbor
-            grid_coords = grid_coords * (self.triplane_res - 1)
-            grid_coords = torch.round(grid_coords).clamp(min=0, max= self.triplane_res).to(torch.int64)
-            x, y, z = grid_coords[..., 0], grid_coords[..., 1], grid_coords[...,2]
-            feat_xy = plane_xy[:, x, y]
-            feat_xz = plane_xz[:, x, z]
-            feat_yz = plane_yz[:, y, z]
-            feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=0).permute(1, 0, 2)          # (bs, 3*self.triplane_c, n)
-            #feats = (feat_xy + feat_yz + feat_xz).permute(1, 0, 2)
+                #feats = self.bilinear_sample_triplanes(grid_coords, plane_xy, plane_yz, plane_xz)
+                x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
+                feat_xy = self.my_2d_bilinear_sample(self.triplane_res, x, y, plane_xy)
+                feat_yz = self.my_2d_bilinear_sample(self.triplane_res, y, z, plane_yz)
+                feat_xz = self.my_2d_bilinear_sample(self.triplane_res, x, z, plane_xz)
+                feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)
         else:
-            #feats = self.bilinear_sample_triplanes(grid_coords, plane_xy, plane_yz, plane_xz)
-            x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
-            feat_xy = self.my_2d_bilinear_sample(x, y, plane_xy)
-            feat_yz = self.my_2d_bilinear_sample(y, z, plane_yz)
-            feat_xz = self.my_2d_bilinear_sample(x, z, plane_xz)
-            feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)
-        
+            feat_list = []
+            for triplane_ in self.triplanes_list:
+                plane_xy, plane_yz, plane_xz = triplane_.chunk(3, dim=0)   # (32, res, res)
+                x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
+                res = triplane_.shape[1]
+                assert triplane_.shape[1] == triplane_.shape[2]
+                feat_xy = self.my_2d_bilinear_sample(res, x, y, plane_xy)
+                feat_yz = self.my_2d_bilinear_sample(res, y, z, plane_yz)
+                feat_xz = self.my_2d_bilinear_sample(res, x, z, plane_xz)
+                feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)       # (bs, 3 * channels, n) TODO: xy/yz/xz三维的feat要不要靠在一起
+                feat_list.append(feats)
+            feats = torch.cat(feat_list, dim=1)
+
         # decoder -> alpha & rgb
         # calculate density
         net = self.actvn(self.fc_0(feats))
