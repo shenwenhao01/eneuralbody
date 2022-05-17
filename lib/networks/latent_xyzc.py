@@ -14,6 +14,9 @@ class Network(nn.Module):
 
         #self.c = nn.Embedding(6890, 16)
         #self.xyzc_net = SparseConvNet()
+        self.use_bilinear = True
+        self.use_dynamic = True
+        self.use_timestep = False
 
         self.latent = nn.Embedding(cfg.num_train_frame, 128)
         
@@ -22,6 +25,24 @@ class Network(nn.Module):
         self.multi_res = True
         if not self.multi_res:
             self.triplanes = nn.Parameter( torch.randn((self.triplane_c * 3, self.triplane_res, self.triplane_res)) )
+            # dynamic deformation
+            if self.use_dynamic:
+                self.w_dim = 512
+                self.z_dim = 0
+                if self.use_timestep:
+                    self.c_dim = embedder.time_dim
+                else:
+                    self.total_frames = 300
+                    self.c_dim = 128
+                    self.latent_embedding = nn.Embedding(self.total_frames, self.c_dim)
+                mapping_kwargs = {}
+                self.deform_synthesis = SynthesisNetwork(w_dim = self.w_dim, 
+                                                        img_resolution = self.triplane_res, 
+                                                        img_channels = self.triplane_c * 3,
+                                                        num_fp16_res = 0,
+                                                        use_noise = True)
+                self.deform_mapping = MappingNetwork(z_dim=self.z_dim, c_dim=self.c_dim, w_dim=self.w_dim, 
+                                                    num_ws=self.deform_synthesis.num_ws, **mapping_kwargs)        
         else:
             triplane_c = int(self.triplane_c / 4)
             self.res_list = [16, 64, 128, 512]
@@ -30,28 +51,21 @@ class Network(nn.Module):
             self.triplane_2 = nn.Parameter( torch.randn((triplane_c * 3, self.res_list[2] ,self.res_list[2])) )
             self.triplane_3 = nn.Parameter( torch.randn((triplane_c * 3, self.res_list[3], self.res_list[3])) )
             self.triplanes_list = [self.triplane_0, self.triplane_1, self.triplane_2, self.triplane_3]
-
-        self.use_bilinear = True
-        # dynamic deformation
-        self.use_dynamic = False
-        self.use_timestep = False
-        if self.use_dynamic:
-            self.w_dim = 512
-            self.z_dim = 0
-            if self.use_timestep:
-                self.c_dim = embedder.time_dim
-            else:
+            # dynamic deformation
+            if self.use_dynamic:
+                self.w_dim = 512
+                self.z_dim = 0
                 self.total_frames = 300
                 self.c_dim = 128
                 self.latent_embedding = nn.Embedding(self.total_frames, self.c_dim)
-            mapping_kwargs = {}
-            self.deform_synthesis = SynthesisNetwork(w_dim = self.w_dim, 
-                                                    img_resolution = self.triplane_res, 
-                                                    img_channels = self.triplane_c * 3,
-                                                    num_fp16_res = 0,
-                                                    use_noise = True)
-            self.deform_mapping = MappingNetwork(z_dim=self.z_dim, c_dim=self.c_dim, w_dim=self.w_dim, 
-                                                num_ws=self.deform_synthesis.num_ws, **mapping_kwargs)        
+                mapping_kwargs = {}
+                self.deform_synthesis_0 = SynthesisNetwork(w_dim = self.w_dim, img_resolution = self.res_list[0], img_channels = triplane_c * 3, num_fp16_res = 0, use_noise = True)
+                self.deform_synthesis_1 = SynthesisNetwork(w_dim = self.w_dim, img_resolution = self.res_list[1], img_channels = triplane_c * 3, num_fp16_res = 0, use_noise = True)
+                self.deform_synthesis_2 = SynthesisNetwork(w_dim = self.w_dim, img_resolution = self.res_list[2], img_channels = triplane_c * 3, num_fp16_res = 0, use_noise = True)
+                self.deform_synthesis_3 = SynthesisNetwork(w_dim = self.w_dim, img_resolution = self.res_list[3], img_channels = triplane_c * 3, num_fp16_res = 0, use_noise = True)
+                self.num_ws = self.deform_synthesis_0.num_ws + self.deform_synthesis_1.num_ws + self.deform_synthesis_2.num_ws + self.deform_synthesis_3.num_ws
+                self.deform_mapping = MappingNetwork(z_dim=self.z_dim, c_dim=self.c_dim, w_dim=self.w_dim, num_ws=self.num_ws, **mapping_kwargs)      
+                print(self.deform_synthesis_0.num_ws, self.deform_synthesis_1.num_ws, self.deform_synthesis_2.num_ws, self.deform_synthesis_3.num_ws)  
 
         # Neuralbody Decoder
         self.actvn = nn.ReLU()
@@ -225,7 +239,7 @@ class Network(nn.Module):
         grid_coords, viewdir_inlier = self.get_grid_coords_(ppts, viewdir, sp_input)        # (batch, num_pixel * num_sample, 3) 分布在[0, 1]
 
         if not self.multi_res:
-            triplanes = self.triplanes
+            triplanes = self.triplanes.clone()          # TODO: 用.clone()效果是不是不一样 https://blog.csdn.net/guofei_fly/article/details/104486708
             if self.use_dynamic:
                 if self.use_timestep:
                     latent_embedding = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
@@ -253,8 +267,19 @@ class Network(nn.Module):
                 feat_xz = self.my_2d_bilinear_sample(self.triplane_res, x, z, plane_xz)
                 feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)
         else:
+            if self.use_dynamic:
+                latent_embedding = self.latent_embedding(sp_input['latent_index'])
+                ws = self.deform_mapping(z=None, c = latent_embedding)
+                deform_triplanes_0 = self.deform_synthesis_0( ws[:, :self.deform_synthesis_0.num_ws] )[0]
+                deform_triplanes_1 = self.deform_synthesis_1( ws[:, self.deform_synthesis_0.num_ws : self.deform_synthesis_0.num_ws + self.deform_synthesis_1.num_ws] )[0]
+                deform_triplanes_2 = self.deform_synthesis_2( ws[:, self.deform_synthesis_0.num_ws + self.deform_synthesis_1.num_ws : self.deform_synthesis_0.num_ws + self.deform_synthesis_1.num_ws + self.deform_synthesis_2.num_ws] )[0]
+                deform_triplanes_3 = self.deform_synthesis_3( ws[:, self.deform_synthesis_0.num_ws + self.deform_synthesis_1.num_ws + self.deform_synthesis_2.num_ws : self.num_ws] )[0]
+                self.deform_list = [deform_triplanes_0, deform_triplanes_1, deform_triplanes_2, deform_triplanes_3]
             feat_list = []
-            for triplane_ in self.triplanes_list:
+            for i, triplane in enumerate( self.triplanes_list ):
+                #print(i, "\n")
+                triplane_ = triplane.clone()
+                triplane_ += self.deform_list[i]
                 plane_xy, plane_yz, plane_xz = triplane_.chunk(3, dim=0)   # (32, res, res)
                 x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
                 res = triplane_.shape[1]
@@ -265,6 +290,7 @@ class Network(nn.Module):
                 feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)       # (bs, 3 * channels, n) TODO: xy/yz/xz三维的feat要不要靠在一起
                 feat_list.append(feats)
             feats = torch.cat(feat_list, dim=1)
+            #print(feats.shape)
 
         # decoder -> alpha & rgb
         # calculate density
