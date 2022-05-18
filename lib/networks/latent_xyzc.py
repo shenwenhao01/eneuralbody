@@ -1,10 +1,11 @@
 from matplotlib.pyplot import grid
 import torch.nn as nn
 #import spconv
+import math
 import torch.nn.functional as F
 import torch
 from lib.config import cfg
-from .networks_stylegan2 import SynthesisNetwork, MappingNetwork
+from .networks_stylegan2 import SynthesisNetwork_, SynthesisNetwork, MappingNetwork
 from . import embedder
 
 
@@ -48,6 +49,7 @@ class Network(nn.Module):
                                                     **mapping_kwargs)        
         else:
             self.res_list = [16, 64, 128, 512]
+
             self.n_res = len(self.res_list)
             triplane_c = int(self.triplane_c / self.n_res)
             self.triplanes_list = []
@@ -58,26 +60,19 @@ class Network(nn.Module):
 
             # dynamic deformation
             if self.use_dynamic:
-                self.latent_embedding = nn.Embedding(self.total_frames, self.c_dim)
-
-                self.w_dim = 512
-                self.z_dim = 0
                 self.total_frames = 300
                 self.c_dim = 128
-                self.ws_list = []
-                for idx in range(self.n_res):
-                    synthesis_layer = SynthesisNetwork(w_dim = self.w_dim, 
-                                            img_resolution = self.res_list[idx], 
-                                            img_channels = triplane_c * 3, 
-                                            num_fp16_res = 0, 
-                                            use_noise = True)
-                    self.ws_list.append( synthesis_layer.num_ws )
-                    setattr(self, f'deform_synthesis_{idx}', synthesis_layer)
-
+                self.latent_embedding = nn.Embedding(self.total_frames, self.c_dim)
+                self.w_dim = 512
+                self.z_dim = 0
+                self.deform_synthesis = SynthesisNetwork_(w_dim = self.w_dim, 
+                                                    img_resolution = self.res_list[-1], 
+                                                    img_channels = triplane_c * 3, 
+                                                    )
                 self.deform_mapping = MappingNetwork(z_dim=self.z_dim, 
                                                     c_dim=self.c_dim, 
                                                     w_dim=self.w_dim, 
-                                                    num_ws=sum(self.ws_list) )      
+                                                    num_ws=self.deform_synthesis.num_ws )      
 
         # Neuralbody Decoder
         self.actvn = nn.ReLU()
@@ -281,19 +276,13 @@ class Network(nn.Module):
         else:
             if self.use_dynamic:
                 latent_embedding = self.latent_embedding(sp_input['latent_index'])
-                ws = self.deform_mapping(z=None, c = latent_embedding)
-                self.deform_list = []
-                ws_list = [sum(self.ws_list[:i]) for i in range(self.n_res+1)]
-                for idx in range(self.n_res):
-                    deform_synthesis_layer =  getattr(self, f'deform_synthesis_{idx}')
-                    deform_synthesis_layer( ws[:, ws_list[idx]:ws[idx+1]] )[0]
-                    self.deform_list.append(deform_synthesis_layer)
-                    
+                ws = self.deform_mapping(z=None, c = latent_embedding)          # (1, sum(self.ws_list), self.w_dim)
+                deform_triplane_list = self.deform_synthesis(ws[:, :self.deform_synthesis.num_ws])      # 不同分辨率的imgs [(c,4,4), (c,8,8), ...]
+
             feat_list = []
             for i, triplane in enumerate( self.triplanes_list ):
-                #print(i, "\n")
                 triplane_ = triplane.clone()
-                triplane_ += self.deform_list[i]
+                triplane_ += deform_triplane_list[ int(math.log(self.res_list[i], 2) - 2) ]
                 plane_xy, plane_yz, plane_xz = triplane_.chunk(3, dim=0)   # (32, res, res)
                 x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
                 res = triplane_.shape[1]
@@ -304,7 +293,6 @@ class Network(nn.Module):
                 feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)       # (bs, 3 * channels, n) TODO: xy/yz/xz三维的feat要不要靠在一起
                 feat_list.append(feats)
             feats = torch.cat(feat_list, dim=1)
-            #print(feats.shape)
 
         # decoder -> alpha & rgb
         # calculate density
