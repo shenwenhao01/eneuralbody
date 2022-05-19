@@ -6,6 +6,7 @@ from lib.utils.net_utils import load_model, save_model, load_network
 from lib.evaluators import make_evaluator
 import torch.multiprocessing
 import torch
+import numpy as np
 import torch.distributed as dist
 import os
 
@@ -91,6 +92,9 @@ def synchronize():
 
 
 def main():
+    torch.manual_seed(20220518)
+    np.random.seed(20220518)
+
     if cfg.distributed:
         cfg.local_rank = int(os.environ['RANK']) % torch.cuda.device_count()
         torch.cuda.set_device(cfg.local_rank)

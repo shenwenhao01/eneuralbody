@@ -15,6 +15,7 @@ class Network(nn.Module):
 
         #self.c = nn.Embedding(6890, 16)
         #self.xyzc_net = SparseConvNet()
+        self.device = torch.device('cuda:{}'.format(cfg.local_rank))
         self.use_bilinear = True
         self.use_dynamic = True
         self.use_timestep = False
@@ -49,7 +50,30 @@ class Network(nn.Module):
                                                     **mapping_kwargs)        
         else:
             self.res_list = [16, 64, 128, 512]
-
+            self.n_res = len(self.res_list)
+            triplane_c = int(self.triplane_c / self.n_res)
+            #self.triplanes_list = []
+            #for i in range(cfg.num_train_frame):
+            #    layer = SynthesisNetwork_(  w_dim = self.w_dim, 
+            #                                img_resolution = self.res_list[-1], 
+            #                                img_channels = self.deform_triplane_c * 3, 
+            #                                num_fp16_res = 0,
+            #                                use_noise = False )
+            #    self.triplanes_list.append(layer)
+            self.c_dim = 512
+            self.w_dim = 512
+            self.z_dim = 0
+            self.latent_embedding = nn.Embedding(cfg.num_train_frame, self.c_dim)
+            self.synthesis_net = SynthesisNetwork_(w_dim = self.w_dim, 
+                                                    img_resolution = self.res_list[-1], 
+                                                    img_channels = triplane_c * 3, 
+                                                    num_fp16_res = 0,
+                                                    use_noise = False)
+            self.mapping_net = MappingNetwork(z_dim=self.z_dim, 
+                                                c_dim=self.c_dim, 
+                                                w_dim=self.w_dim, 
+                                                num_ws=self.synthesis_net.num_ws )
+            '''
             self.n_res = len(self.res_list)
             triplane_c = int(self.triplane_c / self.n_res)
             self.triplanes_list = []
@@ -65,14 +89,25 @@ class Network(nn.Module):
                 self.latent_embedding = nn.Embedding(self.total_frames, self.c_dim)
                 self.w_dim = 512
                 self.z_dim = 0
+                self.deform_triplane_c = 2
                 self.deform_synthesis = SynthesisNetwork_(w_dim = self.w_dim, 
                                                     img_resolution = self.res_list[-1], 
-                                                    img_channels = triplane_c * 3, 
-                                                    )
+                                                    img_channels = self.deform_triplane_c * 3, 
+                                                    num_fp16_res = 0,
+                                                    use_noise = False)
                 self.deform_mapping = MappingNetwork(z_dim=self.z_dim, 
                                                     c_dim=self.c_dim, 
                                                     w_dim=self.w_dim, 
-                                                    num_ws=self.deform_synthesis.num_ws )      
+                                                    num_ws=self.deform_synthesis.num_ws )
+                self.deform_warping_list = []
+                if self.deform_triplane_c < triplane_c:
+                    for idx in range(self.n_res):
+                        layer = nn.Sequential(nn.Conv2d(in_channels=self.deform_triplane_c * 3, 
+                                                        out_channels=triplane_c * 3, 
+                                                        kernel_size=1,),
+                                              nn.ReLU() ).to(self.device)
+                        self.deform_warping_list.append(layer)
+            '''
 
         # Neuralbody Decoder
         self.actvn = nn.ReLU()
@@ -241,12 +276,13 @@ class Network(nn.Module):
         return alpha
 
     def calculate_density_color(self, wpts, viewdir, feature_volume, sp_input):
+        #self.get_parameter_number()
         # interpolate features
         ppts = self.pts_to_can_pts(wpts, sp_input)                                          # smpl coord 采样点坐标
         grid_coords, viewdir_inlier = self.get_grid_coords_(ppts, viewdir, sp_input)        # (batch, num_pixel * num_sample, 3) 分布在[0, 1]
 
         if not self.multi_res:
-            triplanes = self.triplanes.clone()          # TODO: 用.clone()效果是不是不一样 https://blog.csdn.net/guofei_fly/article/details/104486708
+            triplanes = self.triplanes
             if self.use_dynamic:
                 if self.use_timestep:
                     latent_embedding = embedder.time_embedder( sp_input['time_step'] ).unsqueeze(0)
@@ -274,15 +310,17 @@ class Network(nn.Module):
                 feat_xz = self.my_2d_bilinear_sample(self.triplane_res, x, z, plane_xz)
                 feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)
         else:
+            '''
             if self.use_dynamic:
                 latent_embedding = self.latent_embedding(sp_input['latent_index'])
                 ws = self.deform_mapping(z=None, c = latent_embedding)          # (1, sum(self.ws_list), self.w_dim)
                 deform_triplane_list = self.deform_synthesis(ws[:, :self.deform_synthesis.num_ws])      # 不同分辨率的imgs [(c,4,4), (c,8,8), ...]
-
+       
             feat_list = []
             for i, triplane in enumerate( self.triplanes_list ):
                 triplane_ = triplane.clone()
-                triplane_ += deform_triplane_list[ int(math.log(self.res_list[i], 2) - 2) ]
+                input = deform_triplane_list[ int(math.log(self.res_list[i], 2) - 2) ][None, ...]
+                triplane_ += self.deform_warping_list[i]( input )[0]
                 plane_xy, plane_yz, plane_xz = triplane_.chunk(3, dim=0)   # (32, res, res)
                 x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
                 res = triplane_.shape[1]
@@ -293,6 +331,25 @@ class Network(nn.Module):
                 feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)       # (bs, 3 * channels, n) TODO: xy/yz/xz三维的feat要不要靠在一起
                 feat_list.append(feats)
             feats = torch.cat(feat_list, dim=1)
+            '''
+            assert sp_input['latent_index'] < cfg.num_train_frame, "No novel pose!"
+            latent_embedding = self.latent_embedding(sp_input['latent_index'])
+            ws = self.mapping_net(z=None, c = latent_embedding)          # (1, sum(self.ws_list), self.w_dim)
+            triplanes_list = self.synthesis_net(ws[:, :self.synthesis_net.num_ws])      # 不同分辨率的imgs [(c,4,4), (c,8,8), ...]
+            feat_list = []
+            for i, res in enumerate(self.res_list):
+                triplane = triplanes_list[ int(math.log(res, 2) - 2) ]
+                plane_xy, plane_yz, plane_xz = triplane.chunk(3, dim=0)
+                x, y, z = grid_coords[..., 0:1], grid_coords[..., 1:2], grid_coords[...,2:]
+                res = triplane.shape[1]
+                assert triplane.shape[1] == triplane.shape[2]
+                feat_xy = self.my_2d_bilinear_sample(res, x, y, plane_xy)
+                feat_yz = self.my_2d_bilinear_sample(res, y, z, plane_yz)
+                feat_xz = self.my_2d_bilinear_sample(res, x, z, plane_xz)
+                feats = torch.cat((feat_xy, feat_yz, feat_xz), dim=1)
+                feat_list.append(feats)
+            feats = torch.cat(feat_list, dim=1)
+
 
         # decoder -> alpha & rgb
         # calculate density
@@ -325,7 +382,14 @@ class Network(nn.Module):
 
         return raw
 
-    def forward(self, sp_input, grid_coords, viewdir, light_pts):
+    def get_parameter_number(self):
+        total_num = sum(p.numel() for p in self.parameters())
+        trainable_num = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print( f'Total: {total_num} Trainable: {trainable_num}' )
+
+
+    def forward(self, sp_input=None, grid_coords=None, viewdir=None, light_pts=None):
+        self.get_parameter_number()
         raise NotImplementedError
         feat_xy, feat_yz, feat_xz = self.triplanes.chunk(3, dim=0)
 
@@ -348,4 +412,4 @@ class Network(nn.Module):
 
 if __name__ == "__main__":
     net = Network()
-    print(net)
+    print(net())
